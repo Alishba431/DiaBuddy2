@@ -16,7 +16,7 @@ export default function SignupScreen() {
   const [step, setStep] = useState<Step>(1);
 
   const [childName, setChildName] = useState('');
-  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [age, setAge] = useState(9);
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -31,7 +31,8 @@ export default function SignupScreen() {
 
   const validate1 = () => {
     if (!childName.trim()) { setError("Enter the child's full name"); return false; }
-    if (username.trim().length < 3) { setError('Username must be at least 3 characters'); return false; }
+    const v = email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) { setError('Enter a valid email address'); return false; }
     if (password.length < 6) { setError('Password must be at least 6 characters'); return false; }
     if (password !== confirmPassword) { setError('Passwords do not match'); return false; }
     return true;
@@ -50,9 +51,14 @@ export default function SignupScreen() {
   };
 
   const handleCreate = async () => {
+    setError('');
     setLoading(true);
-    await signup(childName.trim(), username.trim().toLowerCase(), password, age, selectedChar, pin);
+    const result = await signup(childName.trim(), email.trim().toLowerCase(), password, age, selectedChar, pin);
     setLoading(false);
+    if (!result.ok) {
+      setError(result.error ?? 'Unable to create account. Please try again.');
+      return;
+    }
     router.replace('/' as any);
   };
 
@@ -100,10 +106,19 @@ export default function SignupScreen() {
           </View>
 
           <View style={styles.field}>
-            <Text style={styles.label}>Username</Text>
+            <Text style={styles.label}>Email</Text>
             <View style={styles.inputRow}>
               <Ionicons name="at-outline" size={17} color={COLORS.textMuted} style={styles.iIcon} />
-              <TextInput style={styles.input} value={username} onChangeText={t => { setUsername(t.toLowerCase().replace(/\s/g, '')); setError(''); }} placeholder="username (no spaces)" placeholderTextColor={COLORS.textMuted} autoCapitalize="none" autoCorrect={false} />
+              <TextInput
+                style={styles.input}
+                value={email}
+                onChangeText={t => { setEmail(t.trim().toLowerCase()); setError(''); }}
+                placeholder="Email address"
+                placeholderTextColor={COLORS.textMuted}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="email-address"
+              />
             </View>
           </View>
 

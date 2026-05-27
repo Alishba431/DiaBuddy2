@@ -18,17 +18,19 @@ interface MenuItem {
 export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const { profile, getCharacterEmoji } = useChildProfile();
-  const { logout, getAccounts, currentUser } = useAuth();
+  const { logout, login, currentUser } = useAuth();
   const [showPinModal, setShowPinModal] = useState(false);
   const [pin, setPin] = useState('');
   const [pinError, setPinError] = useState(false);
 
   const handlePinSubmit = async () => {
-    // Look up actual caretaker PIN for this user
-    const accounts = await getAccounts();
-    const caretaker = accounts.find(a => a.username === currentUser?.username && a.role === 'caretaker');
-    const correctPin = caretaker?.pin ?? '1234';
-    if (pin === correctPin) {
+    if (!currentUser?.email) {
+      setPinError(true);
+      return;
+    }
+
+    const result = await login(currentUser.email, '', 'caretaker', pin);
+    if (result.ok) {
       setShowPinModal(false);
       setPin('');
       setPinError(false);

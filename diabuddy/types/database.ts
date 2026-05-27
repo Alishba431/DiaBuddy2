@@ -8,11 +8,11 @@ export type Json =
 
 // ─── Enums ────────────────────────────────────────────────────────────────────
 
-export type DmType = 'type1' | 'type2';
+export type DmType = 'T1DM' | 'T2DM';
 
-export type CharacterType = 'gluco_lion' | 'insu_robot' | 'zara_panda';
+export type CharacterType = 'lion' | 'robot' | 'panda';
 
-export type LanguageType = 'english' | 'urdu' | 'roman_urdu';
+export type LanguageType = 'en' | 'ur' | 'roman_ur';
 
 export type BgTag =
   | 'fasting'
@@ -54,7 +54,7 @@ export type BadgeType =
   | 'sugar_detective'
   | 'move_champion';
 
-export type UserRole = 'child' | 'caretaker';
+export type UserRole = 'child' | 'caregiver';
 
 export type InsulinLogStatus = 'taken' | 'due' | 'missed';
 
@@ -70,40 +70,40 @@ export type FontSize = 'small' | 'medium' | 'large';
 
 export interface Profile {
   id: string;
+  full_name: string | null;
   username: string;
   role: UserRole;
   created_at: string;
-  updated_at: string;
 }
 
 export interface ChildProfile {
   id: string;
-  user_id: string;
+  profile_id: string;
+  child_username: string;
   display_name: string;
   age: number;
-  character: CharacterType;
-  language: LanguageType;
   dm_type: DmType;
-  points: number;
-  level: number;
-  streak_days: number;
-  onboarding_complete: boolean;
-  font_size: FontSize;
-  sound_enabled: boolean;
-  vibration_enabled: boolean;
-  voice_enabled: boolean;
-  colorblind_mode: boolean;
+  character_choice: CharacterType;
+  language: LanguageType;
+  show_numeric_bg: boolean;
+  target_bg_min: number;
+  target_bg_max: number;
+  bg_review_days: number;
+  hba1c_review_days: number;
   created_at: string;
-  updated_at: string;
 }
 
 export interface CaregiverAccount {
   id: string;
+  profile_id: string;
   child_profile_id: string;
-  caregiver_profile_id: string;
-  pin_hash: string;
+  dashboard_pin: string;
+  relationship: string;
+  notify_critical: boolean;
+  notify_missed_doses: boolean;
+  notify_low_adherence: boolean;
+  notify_weekly_report: boolean;
   created_at: string;
-  updated_at: string;
 }
 
 export interface GlucoseReading {
@@ -257,20 +257,14 @@ export type ProfileInsert = Omit<Profile, 'created_at' | 'updated_at'> & {
   updated_at?: string;
 };
 
-export type ChildProfileInsert = Omit<ChildProfile, 'id' | 'points' | 'level' | 'streak_days' | 'onboarding_complete' | 'created_at' | 'updated_at'> & {
+export type ChildProfileInsert = Omit<ChildProfile, 'id' | 'created_at'> & {
   id?: string;
-  points?: number;
-  level?: number;
-  streak_days?: number;
-  onboarding_complete?: boolean;
   created_at?: string;
-  updated_at?: string;
 };
 
-export type CaregiverAccountInsert = Omit<CaregiverAccount, 'id' | 'created_at' | 'updated_at'> & {
+export type CaregiverAccountInsert = Omit<CaregiverAccount, 'id' | 'created_at'> & {
   id?: string;
   created_at?: string;
-  updated_at?: string;
 };
 
 export type GlucoseReadingInsert = Omit<GlucoseReading, 'id' | 'bg_zone' | 'created_at'> & {

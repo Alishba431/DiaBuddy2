@@ -12,7 +12,7 @@ export default function LoginScreen() {
   const insets = useSafeAreaInsets();
   const { login } = useAuth();
   const [role, setRole] = useState<Role>('child');
-  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [pin, setPin] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -20,14 +20,15 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
 
   const handleLogin = async () => {
-    if (!username.trim()) { setError('Please enter your username'); return; }
+    const v = email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) { setError('Please enter a valid email address'); return; }
     if (role === 'child' && !password) { setError('Please enter your password'); return; }
-    if (role === 'caretaker' && pin.length < 4) { setError('Please enter your 4-digit PIN'); return; }
+    if (role === 'caretaker' && pin.length < 4) { setError('Please enter your 4-digit caregiver PIN'); return; }
     setLoading(true);
     setError('');
-    const ok = await login(username.trim(), password, role, pin);
+    const result = await login(v, password, role, pin);
     setLoading(false);
-    if (!ok) { setError(role === 'child' ? 'Incorrect username or password' : 'Incorrect username or PIN'); return; }
+    if (!result.ok) { setError(result.error ?? (role === 'child' ? 'Incorrect email or password' : 'Incorrect email or PIN')); return; }
     router.replace(role === 'caretaker' ? '/caregiver/dashboard' : '/' as any);
   };
 
@@ -57,7 +58,7 @@ export default function LoginScreen() {
             >
               <Ionicons name={r === 'child' ? 'person' : 'people'} size={20} color={role === r ? COLORS.card : COLORS.textMuted} />
               <Text style={[styles.roleBtnText, role === r && styles.roleBtnTextActive]}>
-                {r === 'child' ? 'Child' : 'Caretaker'}
+                {r === 'child' ? 'Child' : 'Caregiver'}
               </Text>
             </TouchableOpacity>
           ))}
@@ -67,17 +68,18 @@ export default function LoginScreen() {
       {/* Form */}
       <View style={styles.form}>
         <View style={styles.field}>
-          <Text style={styles.label}>Username</Text>
+          <Text style={styles.label}>Email</Text>
           <View style={styles.inputRow}>
             <Ionicons name="person-outline" size={18} color={COLORS.textMuted} style={styles.iIcon} />
             <TextInput
               style={styles.input}
-              value={username}
-              onChangeText={t => { setUsername(t); setError(''); }}
-              placeholder="Enter username"
+              value={email}
+              onChangeText={t => { setEmail(t.trim().toLowerCase()); setError(''); }}
+              placeholder="Enter email"
               placeholderTextColor={COLORS.textMuted}
               autoCapitalize="none"
               autoCorrect={false}
+              keyboardType="email-address"
             />
           </View>
         </View>
@@ -102,7 +104,7 @@ export default function LoginScreen() {
           </View>
         ) : (
           <View style={styles.field}>
-            <Text style={styles.label}>Caretaker PIN</Text>
+            <Text style={styles.label}>Caregiver PIN</Text>
             <View style={styles.inputRow}>
               <Ionicons name="keypad-outline" size={18} color={COLORS.textMuted} style={styles.iIcon} />
               <TextInput

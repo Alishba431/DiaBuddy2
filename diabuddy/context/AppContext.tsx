@@ -1,19 +1,18 @@
-import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { mockProfile, mockGlucoseReadings, mockMissions, characters } from '@/data/mockData';
+import * as Crypto from 'expo-crypto';
+import { supabase } from '@/lib/supabase';
+import type { ChildProfile as DbChildProfile, Profile as DbProfile } from '@/types/database';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface UserAccount {
   id: string;
   username: string;
-  password: string;
+  email: string;
   role: 'child' | 'caretaker';
-  childName: string;
-  pin?: string;
-  age?: number;
-  character?: string;
-  language?: string;
+  childName?: string;
+  childProfiles: DbChildProfile[];
 }
 
 export interface NotificationSettings {
@@ -70,67 +69,352 @@ interface Settings {
   colorblind: boolean;
 }
 
+const mapCharacterToDb = (char: string): string => {
+  if (char === 'gluco_lion') return 'lion';
+  if (char === 'insu_robot') return 'robot';
+  if (char === 'zara_panda') return 'panda';
+  return char;
+};
+
+const mapCharacterFromDb = (char: string): string => {
+  if (char === 'lion') return 'gluco_lion';
+  if (char === 'robot') return 'insu_robot';
+  if (char === 'panda') return 'zara_panda';
+  return char;
+};
+
+const mapLanguageToDb = (lang: string): string => {
+  if (lang === 'english') return 'en';
+  if (lang === 'urdu') return 'ur';
+  if (lang === 'roman_urdu') return 'roman_ur';
+  return lang;
+};
+
+const mapLanguageFromDb = (lang: string): string => {
+  if (lang === 'en') return 'english';
+  if (lang === 'ur') return 'urdu';
+  if (lang === 'roman_ur') return 'roman_urdu';
+  return lang;
+};
+
 // ─── Auth Context ─────────────────────────────────────────────────────────────
 
 const AuthContext = createContext<{
   currentUser: UserAccount | null;
   isLoading: boolean;
-  login: (username: string, password: string, role: 'child' | 'caretaker', pin?: string) => Promise<boolean>;
-  signup: (childName: string, username: string, password: string, age: number, character: string, pin: string, language?: string) => Promise<void>;
+  login: (email: string, password: string, role: 'child' | 'caretaker', pin?: string) => Promise<{ ok: boolean; error?: string }>;
+  signup: (childName: string, email: string, password: string, age: number, character: string, pin: string, language?: string) => Promise<{ ok: boolean; error?: string }>;
   logout: () => Promise<void>;
-  getAccounts: () => Promise<UserAccount[]>;
 }>({
   currentUser: null,
   isLoading: true,
-  login: async () => false,
-  signup: async () => {},
+  login: async () => ({ ok: false }),
+  signup: async () => ({ ok: false }),
   logout: async () => {},
-  getAccounts: async () => [],
 });
 
 function AuthProvider({ children }: { children: ReactNode }) {
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
+  const deriveCaregiverEmail = (email: string) => {
+    const [local, domain] = email.trim().toLowerCase().split('@');
+    if (!local || !domain) return '';
+    const caretakerSuffix = '+caregiver';
+    const caregiverLocal = local.endsWith(caretakerSuffix) ? local : `${local}${caretakerSuffix}`;
+    return `${caregiverLocal}@${domain}`;
+  };
+
+  const sanitizeUsername = (raw: string) => {
+    // Supabase requires a valid email string; we only allow a safe subset for the synthetic email local-part.
+    // Also handle cases where user accidentally types an email into the username field.
+    const beforeAt = raw.trim().toLowerCase().split('@')[0];
+    return beforeAt.replace(/[^a-z0-9]/g, '');
+  };
+
+  const pinToSupabasePassword = (rawPin: string) => {
+    const pin = rawPin.replace(/\D/g, '').slice(0, 4);
+    // Supabase Auth password requirements are stricter than a 4-digit PIN.
+    // We transform the PIN into a deterministic longer string for signUp/signIn.
+    return `${pin}_diabuddy`;
+  };
+
+  const usernameFromEmail = (email: string) => {
+    const local = email.trim().toLowerCase().split('@')[0] ?? '';
+    return sanitizeUsername(local);
+  };
+
+  const isValidEmail = (email: string) => {
+    const v = email.trim().toLowerCase();
+    // Basic client-side validation; Supabase still enforces the real rules server-side.
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+  };
+  const normalizeRole = (role: string): UserAccount['role'] =>
+    role === 'caregiver' ? 'caretaker' : 'child';
+
+  const fetchCurrentUser = async (userId: string, email: string): Promise<UserAccount | null> => {
+    const { data: profileData, error: profileError } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .single();
+    const profile = (profileData ?? null) as DbProfile | null;
+
+    if (profileError || !profile) return null;
+
+    const role = normalizeRole(profile.role);
+    let childProfiles: DbChildProfile[] = [];
+
+    if (role === 'child') {
+      const { data } = await supabase.from('child_profiles').select('*').eq('profile_id', profile.id);
+      childProfiles = (data ?? []) as DbChildProfile[];
+    } else {
+      const { data: caregiverLinks } = await supabase
+        .from('caregiver_accounts')
+        .select('child_profile_id')
+        .eq('profile_id', profile.id);
+
+      const ids = (caregiverLinks ?? []).map(link => link.child_profile_id);
+      if (ids.length > 0) {
+        const { data } = await supabase.from('child_profiles').select('*').in('id', ids);
+        childProfiles = (data ?? []) as DbChildProfile[];
+      }
+    }
+
+    return {
+      id: profile.id,
+      username: profile.username,
+      email,
+      role,
+      childName: childProfiles[0]?.display_name,
+      childProfiles,
+    };
+  };
+
+  const syncSessionState = async () => {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    if (!session?.user?.id) {
+      setCurrentUser(null);
+      return;
+    }
+
+    const email = session.user.email ?? '';
+    const user = await fetchCurrentUser(session.user.id, email);
+    setCurrentUser(user);
+  };
+
   useEffect(() => {
-    AsyncStorage.getItem('diabuddy_current_user').then(raw => {
-      if (raw) setCurrentUser(JSON.parse(raw));
+    syncSessionState().finally(() => {
       setIsLoading(false);
     });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(() => {
+      syncSessionState();
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
-  const getAccounts = async (): Promise<UserAccount[]> => {
-    const raw = await AsyncStorage.getItem('diabuddy_accounts');
-    return raw ? JSON.parse(raw) : [];
-  };
+  const login = async (
+    email: string,
+    password: string,
+    role: 'child' | 'caretaker',
+    pin?: string
+  ): Promise<{ ok: boolean; error?: string }> => {
+    const cleanEmail = email.trim().toLowerCase();
+    if (!isValidEmail(cleanEmail)) {
+      return { ok: false, error: 'Please enter a valid email address' };
+    }
+    const emailToUse = role === 'child' ? cleanEmail : deriveCaregiverEmail(cleanEmail);
+    const roleSecret = role === 'child' ? password : pinToSupabasePassword(pin ?? '');
 
-  const login = async (username: string, password: string, role: 'child' | 'caretaker', pin?: string): Promise<boolean> => {
-    const accounts = await getAccounts();
-    const account = accounts.find(a => a.username.toLowerCase() === username.toLowerCase() && a.role === role);
-    if (!account) return false;
-    if (role === 'child' && account.password !== password) return false;
-    if (role === 'caretaker' && account.pin !== pin) return false;
-    await AsyncStorage.setItem('diabuddy_current_user', JSON.stringify(account));
+    const { error: signInError } = await supabase.auth.signInWithPassword({
+      email: emailToUse,
+      password: roleSecret,
+    });
+
+    if (signInError) return { ok: false, error: signInError.message };
+
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    if (!session?.user?.id) return { ok: false, error: 'Login failed. Please try again.' };
+
+    const account = await fetchCurrentUser(session.user.id, session.user.email ?? '');
+    if (!account || account.role !== role) {
+      await supabase.auth.signOut();
+      return { ok: false, error: 'This account is not registered for the selected role.' };
+    }
+
     setCurrentUser(account);
-    return true;
+    return { ok: true };
   };
 
-  const signup = async (childName: string, username: string, password: string, age: number, character: string, pin: string, language = 'english') => {
-    const accounts = await getAccounts();
-    const id = Date.now().toString();
-    const child: UserAccount = { id, username, password, role: 'child', childName, age, character, language };
-    const caretaker: UserAccount = { id: id + '_c', username, password: '', role: 'caretaker', childName, pin, age };
-    await AsyncStorage.setItem('diabuddy_accounts', JSON.stringify([...accounts, child, caretaker]));
-    await AsyncStorage.setItem('diabuddy_current_user', JSON.stringify(child));
-    setCurrentUser(child);
+  const signup = async (
+    childName: string,
+    email: string,
+    password: string,
+    age: number,
+    character: string,
+    pin: string,
+    language = 'english'
+  ): Promise<{ ok: boolean; error?: string }> => {
+    const cleanEmail = email.trim().toLowerCase();
+    if (!isValidEmail(cleanEmail)) {
+      return { ok: false, error: 'Please enter a valid email address' };
+    }
+    const profilesUsername = usernameFromEmail(cleanEmail);
+    if (profilesUsername.length < 3) {
+      return { ok: false, error: 'Email local-part must be at least 3 characters' };
+    }
+
+    const childEmail = cleanEmail;
+    const caregiverEmail = deriveCaregiverEmail(cleanEmail);
+
+    const { data: existingProfile } = await supabase
+      .from('profiles')
+      .select('id')
+      .eq('username', profilesUsername)
+      .eq('role', 'child')
+      .maybeSingle();
+
+    if (existingProfile) {
+      return { ok: false, error: 'Email is already taken. Try another one.' };
+    }
+
+    console.log('[Signup] Starting signup for child email:', childEmail);
+    await supabase.auth.signOut();
+
+    const { data: childAuth, error: childAuthError } = await supabase.auth.signUp({
+      email: childEmail,
+      password,
+    });
+    if (childAuthError || !childAuth.user?.id) {
+      console.error('[Signup] Child Auth Error:', childAuthError);
+      if (childAuthError?.message.toLowerCase().includes('already registered') || childAuthError?.message.toLowerCase().includes('already exists')) {
+        return { ok: false, error: 'Email is already taken. Try another one.' };
+      }
+      return { ok: false, error: childAuthError?.message ?? 'Could not create child account.' };
+    }
+    console.log('[Signup] Child Auth created successfully, user ID:', childAuth.user.id);
+    if (!childAuth.session) {
+      console.warn('[Signup] No session returned. Email confirmation might be enabled in Supabase.');
+      return {
+        ok: false,
+        error: 'Email confirmation is enabled in Supabase. Disable it for immediate in-app signup/login.',
+      };
+    }
+
+    const childUserId = childAuth.user.id;
+    console.log('[Signup] Upserting child profile row in profiles table...');
+    const { error: childProfileInsertError } = await supabase.from('profiles').upsert({
+      id: childUserId,
+      username: profilesUsername,
+      role: 'child',
+    });
+    if (childProfileInsertError) {
+      console.error('[Signup] Child Profile profiles upsert error:', childProfileInsertError);
+      return { ok: false, error: childProfileInsertError.message };
+    }
+    console.log('[Signup] Child Profile profiles row upserted successfully.');
+
+    console.log('[Signup] Inserting child profile choice row in child_profiles...');
+    const { data: childProfile, error: childRowError } = await supabase
+      .from('child_profiles')
+      .insert({
+        profile_id: childUserId,
+        child_username: profilesUsername,
+        display_name: childName,
+        age,
+        character_choice: mapCharacterToDb(character) as any,
+        language: mapLanguageToDb(language) as any,
+        dm_type: 'T1DM',
+      })
+      .select('*')
+      .single();
+    if (childRowError || !childProfile) {
+      console.error('[Signup] child_profiles insert error:', childRowError);
+      return { ok: false, error: childRowError?.message ?? 'Could not create child profile.' };
+    }
+    console.log('[Signup] child_profiles row inserted successfully:', childProfile.id);
+
+    console.log('[Signup] Starting caregiver Auth creation for email:', caregiverEmail);
+    await supabase.auth.signOut();
+
+    const { data: caregiverAuth, error: caregiverAuthError } = await supabase.auth.signUp({
+      email: caregiverEmail,
+      password: pinToSupabasePassword(pin),
+    });
+    if (caregiverAuthError || !caregiverAuth.user?.id) {
+      console.error('[Signup] Caregiver Auth Error:', caregiverAuthError);
+      if (caregiverAuthError?.message.toLowerCase().includes('already registered') || caregiverAuthError?.message.toLowerCase().includes('already exists')) {
+        return { ok: false, error: 'Email is already taken. Try another one.' };
+      }
+      return { ok: false, error: caregiverAuthError?.message ?? 'Could not create caregiver account.' };
+    }
+    console.log('[Signup] Caregiver Auth created successfully, user ID:', caregiverAuth.user.id);
+    if (!caregiverAuth.session) {
+      console.warn('[Signup] No session returned for caregiver. Email confirmation might be enabled.');
+      return {
+        ok: false,
+        error: 'Email confirmation is enabled in Supabase. Disable it for immediate in-app signup/login.',
+      };
+    }
+
+    const caregiverUserId = caregiverAuth.user.id;
+    console.log('[Signup] Upserting caregiver profile row in profiles table...');
+    const { error: caregiverProfileInsertError } = await supabase.from('profiles').upsert({
+      id: caregiverUserId,
+      username: `${profilesUsername}_caregiver`,
+      role: 'caregiver',
+    });
+    if (caregiverProfileInsertError) {
+      console.error('[Signup] Caregiver Profile profiles upsert error:', caregiverProfileInsertError);
+      return { ok: false, error: caregiverProfileInsertError.message };
+    }
+    console.log('[Signup] Caregiver Profile profiles row upserted successfully.');
+
+    const pinHash = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, pin);
+    console.log('[Signup] Inserting caregiver account link in caregiver_accounts...');
+    const { error: caregiverLinkError } = await supabase.from('caregiver_accounts').insert({
+      child_profile_id: childProfile.id,
+      profile_id: caregiverUserId,
+      dashboard_pin: pinHash,
+    });
+    if (caregiverLinkError) {
+      console.error('[Signup] caregiver_accounts insert error:', caregiverLinkError);
+      return { ok: false, error: caregiverLinkError.message };
+    }
+    console.log('[Signup] caregiver_accounts row inserted successfully.');
+
+    console.log('[Signup] Signing back in as child to log user into app...');
+    const { error: childLoginError } = await supabase.auth.signInWithPassword({
+      email: childEmail,
+      password,
+    });
+    if (childLoginError) {
+      console.error('[Signup] Final child login error:', childLoginError);
+      return { ok: false, error: 'Accounts created, but automatic sign-in failed. Please log in manually.' };
+    }
+
+    const signedInUser = await fetchCurrentUser(childUserId, childEmail);
+    setCurrentUser(signedInUser);
+    console.log('[Signup] Signup complete and session synchronized.');
+    return { ok: true };
   };
 
   const logout = async () => {
-    await AsyncStorage.removeItem('diabuddy_current_user');
+    await supabase.auth.signOut();
     setCurrentUser(null);
   };
 
-  return <AuthContext.Provider value={{ currentUser, isLoading, login, signup, logout, getAccounts }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ currentUser, isLoading, login, signup, logout }}>{children}</AuthContext.Provider>;
 }
 
 // ─── Notification Context ─────────────────────────────────────────────────────
@@ -174,7 +458,24 @@ const ChildProfileContext = createContext<{
 }>({ profile: mockProfile, setProfile: () => {}, addPoints: () => {}, getCharacterEmoji: () => '🦁' });
 
 function ChildProfileProvider({ children }: { children: ReactNode }) {
+  const { currentUser } = useAuth();
   const [profile, setProfile] = useState<ChildProfile>(mockProfile);
+
+  useEffect(() => {
+    const activeChild = currentUser?.childProfiles?.[0];
+    if (!activeChild) return;
+
+    setProfile({
+      name: activeChild.display_name,
+      age: activeChild.age,
+      character: mapCharacterFromDb(activeChild.character_choice) as any,
+      language: mapLanguageFromDb(activeChild.language) as any,
+      points: 0,
+      level: 1,
+      streak: 0,
+    });
+  }, [currentUser]);
+
   const addPoints = (pts: number) => setProfile(p => ({ ...p, points: p.points + pts }));
   const getCharacterEmoji = () => characters.find(c => c.id === profile.character)?.emoji ?? '🦁';
   return <ChildProfileContext.Provider value={{ profile, setProfile, addPoints, getCharacterEmoji }}>{children}</ChildProfileContext.Provider>;
