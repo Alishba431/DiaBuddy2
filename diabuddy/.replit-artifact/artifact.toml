@@ -1,0 +1,27 @@
+kind = "mobile"
+previewPath = "/"
+title = "DiaBuddy"
+version = "1.0.0"
+id = "artifacts/diabuddy"
+router = "expo-domain"
+
+[[integratedSkills]]
+name = "expo"
+version = "1.0.0"
+
+[[services]]
+ensurePreviewReachable = "/status"
+name = "expo"
+paths = [ "/" ]
+localPort = 26022
+
+[services.development]
+run = "pnpm --filter @workspace/diabuddy run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/diabuddy", "run", "build" ]
+run = [ "pnpm", "--filter", "@workspace/diabuddy", "run", "serve" ]
+
+[services.env]
+PORT = "26022"
+BASE_PATH = "/"
