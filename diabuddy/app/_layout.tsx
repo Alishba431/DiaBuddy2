@@ -4,6 +4,9 @@ import {
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
+
+// Ensure splash screen is prevented from auto hiding as early as possible
+SplashScreen.preventAutoHideAsync();
 import React, { useEffect } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -76,7 +79,17 @@ export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({ Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold });
 
   useEffect(() => {
-    if (fontsLoaded || fontError) SplashScreen.hideAsync();
+    // Hide splash screen once fonts are loaded (or an error occurs)
+    const hide = async () => {
+      try {
+        if (fontsLoaded || fontError) {
+          await SplashScreen.hideAsync();
+        }
+      } catch (e) {
+        console.warn('SplashScreen hide error', e);
+      }
+    };
+    hide();
   }, [fontsLoaded, fontError]);
 
   if (!fontsLoaded && !fontError) return null;

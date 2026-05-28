@@ -483,6 +483,53 @@ function ChildProfileProvider({ children }: { children: ReactNode }) {
 
 // ─── Glucose Context ──────────────────────────────────────────────────────────
 
+const mapBgTagFromDb = (tag: string): string => {
+  if (tag === 'fasting') return 'Fasting';
+  if (tag === 'after_meal' || tag === 'post_meal') return 'After Meal';
+  if (tag === 'before_bed') return 'Before Bed';
+  if (tag === 'after_exercise') return 'After Exercise';
+  if (tag === 'pre_snack') return 'Pre-Snack';
+  if (tag === 'before_snack') return 'Before Snack';
+  return tag;
+};
+
+const mapBgTagToDb = (tag: string): string => {
+  const cleaned = tag.trim();
+  // Direct mappings for known UI labels
+  if (cleaned === 'After Meal') return 'after_meal';
+  if (cleaned === 'Pre-Snack' || cleaned === 'Pre‑Snack') return 'pre_snack';
+  if (cleaned === 'Before Snack') return 'before_snack';
+  if (cleaned === 'Before Bed') return 'before_bed';
+  if (cleaned === 'After Exercise') return 'after_exercise';
+  if (cleaned === 'Fasting') return 'fasting';
+  // Normalise any other input: lowercase and replace spaces/hyphens with underscores
+  const normalized = cleaned
+    .toLowerCase()
+    .replace(/[\s\-\u2010\u2011\u2012\u2013\u2014\u2015]+/g, "_");
+  // If still not matching known enum values, default to 'fasting' to avoid DB errors
+  const validEnums = [
+    'fasting',
+    'after_meal',
+    'before_bed',
+    'after_exercise',
+    'pre_snack',
+    'post_meal',
+    'before_snack',
+  ];
+  return validEnums.includes(normalized) ? normalized : 'fasting';
+};
+
+const parseRecordedAt = (recordedAtStr: string) => {
+  const d = new Date(recordedAtStr);
+  const time = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const today = new Date();
+  let date = 'Today';
+  if (d.toDateString() !== today.toDateString()) {
+    date = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+  return { time, date };
+};
+
 const GlucoseContext = createContext<{
   readings: GlucoseReading[];
   addReading: (r: Omit<GlucoseReading, 'id'>) => void;
@@ -491,9 +538,126 @@ const GlucoseContext = createContext<{
 }>({ readings: mockGlucoseReadings, addReading: () => {}, lastReading: mockGlucoseReadings[mockGlucoseReadings.length - 1], getZone: () => 'green' });
 
 function GlucoseProvider({ children }: { children: ReactNode }) {
-  const [readings, setReadings] = useState<GlucoseReading[]>(mockGlucoseReadings);
-  const addReading = (r: Omit<GlucoseReading, 'id'>) => setReadings(prev => [...prev, { ...r, id: Date.now().toString() }]);
-  const lastReading = readings[readings.length - 1] ?? null;
+  const { currentUser } = useAuth();
+  const [readings, setReadings] = useState<GlucoseReading[]>([]);
+
+  useEffect(() => {
+    const childProfileId = currentUser?.childProfiles?.[0]?.id;
+    if (!childProfileId) {
+      setReadings([]);
+      return;
+    }
+
+    const fetchReadings = async () => {
+      const { data, error } = await supabase
+        .from('glucose_readings')
+        .select('*')
+        .eq('child_profile_id', childProfileId)
+        .order('recorded_at', { ascending: false });
+
+      if (error) {
+        console.error("Error fetching readings:", error.message);
+        return;
+      }
+
+      if (data) {
+        const mapped = data.map((r: any) => {
+          const { time, date } = parseRecordedAt(r.recorded_at);
+            return {
+              id: r.id,
+              time,
+              value: r.reading_value,
+              type: mapBgTagFromDb(r.reading_tag),
+              date
+            };
+        });
+        setReadings(mapped);
+      }
+    };
+
+    fetchReadings();
+
+    const channel = supabase
+      .channel(`glucose-changes-${childProfileId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'glucose_readings',
+          filter: `child_profile_id=eq.${childProfileId}`,
+        },
+        (payload) => {
+          if (payload.eventType === 'INSERT') {
+            const newReading = payload.new;
+            const { time, date } = parseRecordedAt(newReading.recorded_at);
+            const mapped = {
+              id: newReading.id,
+              time,
+              value: newReading.reading_value,
+              type: mapBgTagFromDb(newReading.reading_tag),
+              date
+            };
+            setReadings(prev => {
+              if (prev.some(r => r.id === mapped.id)) return prev;
+              return [mapped, ...prev];
+            });
+          } else if (payload.eventType === 'DELETE') {
+            setReadings(prev => prev.filter(r => r.id !== payload.old.id));
+          } else if (payload.eventType === 'UPDATE') {
+            const updatedReading = payload.new;
+            const { time, date } = parseRecordedAt(updatedReading.recorded_at);
+            const mapped = {
+              id: updatedReading.id,
+              time,
+              value: updatedReading.reading_value,
+              type: mapBgTagFromDb(updatedReading.reading_tag),
+              date
+            };
+            setReadings(prev => prev.map(r => r.id === mapped.id ? mapped : r));
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [currentUser]);
+
+  const addReading = async (r: Omit<GlucoseReading, 'id'>) => {
+    const childProfileId = currentUser?.childProfiles?.[0]?.id;
+    if (!childProfileId) {
+      console.error("No active child profile found to save reading.");
+      return;
+    }
+    const { data, error } = await supabase.from('glucose_readings').insert({
+      child_profile_id: childProfileId,
+      reading_value: r.value,
+      reading_tag: mapBgTagToDb(r.type) as any,
+      notes: null,
+      recorded_at: new Date().toISOString()
+    }).select();
+    if (error) {
+      console.error("Error inserting glucose reading:", error.message);
+      return;
+    }
+    // Optimistically update local state with the new reading
+    if (data && data.length > 0) {
+      const newReading = data[0];
+      const { time, date } = parseRecordedAt(newReading.recorded_at);
+      const mapped = {
+        id: newReading.id,
+        time,
+        value: newReading.reading_value,
+        type: mapBgTagFromDb(newReading.reading_tag),
+        date,
+      };
+      setReadings(prev => [mapped, ...prev]);
+    }
+  };
+
+  const lastReading = readings[0] ?? null;
   const getZone = (val: number): 'green' | 'yellow' | 'red_high' | 'red_low' => {
     if (val < 70) return 'red_low';
     if (val <= 180) return 'green';

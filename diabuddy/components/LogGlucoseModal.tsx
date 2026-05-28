@@ -8,7 +8,7 @@ import { COLORS } from '@/constants/colors';
 import { useGlucose } from '@/context/AppContext';
 import { useChildProfile } from '@/context/AppContext';
 
-const TYPES = ['Fasting', 'After Meal', 'Before Bed', 'After Exercise'];
+const TYPES = ['Fasting', 'After Meal', 'Pre-Snack', 'Before Snack'];
 
 interface Props {
   visible: boolean;
@@ -29,13 +29,14 @@ export function LogGlucoseModal({ visible, onClose, onSaved }: Props) {
   };
 
   const handleSave = () => {
+    const sanitizedVal = Math.max(20, Math.min(600, Number(value) || 120));
     const now = new Date();
     const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-    addReading({ time, value, type });
+    addReading({ time, value: sanitizedVal, type });
     addPoints(10);
-    const zone = getZone(value);
+    const zone = getZone(sanitizedVal);
     if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    onSaved(value, zone);
+    onSaved(sanitizedVal, zone);
     onClose();
   };
 

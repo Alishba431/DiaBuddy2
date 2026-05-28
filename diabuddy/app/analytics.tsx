@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View, ScrollView, Platform, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Polyline, Circle, Line, Text as SvgText, Rect } from 'react-native-svg';
@@ -75,24 +75,131 @@ function StatCard({ label, value, unit, color }: { label: string; value: string 
   );
 }
 
+import { useAuth } from '@/context/AppContext';
+import { supabase } from '@/lib/supabase';
+
 export default function AnalyticsScreen() {
   const insets = useSafeAreaInsets();
   const { width: screenW } = useWindowDimensions();
   const { readings } = useGlucose();
+  const { currentUser } = useAuth();
+  const [dbReadings, setDbReadings] = useState<any[]>([]);
   const [period, setPeriod] = useState<Period>('week');
 
   const chartWidth = screenW - 40;
 
-  const weeklyAvgs = mockWeeklyData.map(d => Math.round(d.readings.reduce((s, v) => s + v, 0) / d.readings.length));
-  const weekLabels = mockWeeklyData.map(d => d.day);
+  useEffect(() => {
+    const childProfileId = currentUser?.childProfiles?.[0]?.id;
+    if (!childProfileId) return;
 
-  const monthlyAvgs = mockMonthlyData.map(d => d.avg);
-  const monthLabels = mockMonthlyData.map(d => `${d.day}`);
+    const fetchTrendData = async () => {
+      const { data, error } = await supabase
+        .from('glucose_readings')
+        .select('*')
+        .eq('child_profile_id', childProfileId)
+        .order('recorded_at', { ascending: false });
+
+      if (error) {
+        console.error("Error fetching trend data:", error.message);
+        return;
+      }
+      if (data) {
+        setDbReadings(data);
+      }
+    };
+    fetchTrendData();
+  }, [currentUser]);
+
+  const weeklyAvgs = useMemo(() => {
+    if (dbReadings.length === 0) {
+      return mockWeeklyData.map(d => Math.round(d.readings.reduce((s, v) => s + v, 0) / d.readings.length));
+    }
+    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const days: { dateStr: string; dayName: string; values: number[] }[] = [];
+    const now = new Date();
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(now.getDate() - i);
+      days.push({
+        dateStr: d.toDateString(),
+        dayName: dayNames[d.getDay()],
+        values: [] as number[],
+      });
+    }
+    dbReadings.forEach(r => {
+      const rDate = new Date(r.recorded_at).toDateString();
+      const match = days.find(day => day.dateStr === rDate);
+      if (match) {
+        match.values.push(r.reading_value);
+      }
+    });
+    return days.map(d => {
+      const vals = d.values.length > 0 ? d.values : [120];
+      return Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
+    });
+  }, [dbReadings]);
+
+  const weekLabels = useMemo(() => {
+    if (dbReadings.length === 0) {
+      return mockWeeklyData.map(d => d.day);
+    }
+    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const labels = [];
+    const now = new Date();
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(now.getDate() - i);
+      labels.push(dayNames[d.getDay()]);
+    }
+    return labels;
+  }, [dbReadings]);
+
+  const monthlyAvgs = useMemo(() => {
+    if (dbReadings.length === 0) {
+      return mockMonthlyData.map(d => d.avg);
+    }
+    const days: { dateStr: string; values: number[] }[] = [];
+    const now = new Date();
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(now.getDate() - i);
+      days.push({
+        dateStr: d.toDateString(),
+        values: [] as number[],
+      });
+    }
+    dbReadings.forEach(r => {
+      const rDate = new Date(r.recorded_at).toDateString();
+      const match = days.find(day => day.dateStr === rDate);
+      if (match) {
+        match.values.push(r.reading_value);
+      }
+    });
+    return days.map(d => {
+      const vals = d.values.length > 0 ? d.values : [120];
+      return Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
+    });
+  }, [dbReadings]);
+
+  const monthLabels = useMemo(() => {
+    if (dbReadings.length === 0) {
+      return mockMonthlyData.map(d => `${d.day}`);
+    }
+    const labels = [];
+    const now = new Date();
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(now.getDate() - i);
+      labels.push(`${d.getDate()}`);
+    }
+    return labels;
+  }, [dbReadings]);
 
   const displayData   = period === 'week' ? weeklyAvgs : monthlyAvgs;
   const displayLabels = period === 'week' ? weekLabels : monthLabels;
 
   const stats = useMemo(() => {
+    if (displayData.length === 0) return { avg: 120, tir: 100, highs: 0, lows: 0, estimatedHba1c: '6.0' };
     const avg = Math.round(displayData.reduce((s, v) => s + v, 0) / displayData.length);
     const inRange = displayData.filter(v => v >= 70 && v <= 180).length;
     const tir = Math.round((inRange / displayData.length) * 100);
@@ -117,6 +224,27 @@ export default function AnalyticsScreen() {
     if (lows === 0 && highs <= 1) parts.push('No significant high or low episodes. Keep up the consistent routine!');
     return parts.join(' ');
   }, [stats]);
+
+  const breakdownData = useMemo(() => {
+    if (period === 'week') {
+      return weekLabels.map((label, idx) => ({
+        label,
+        avg: weeklyAvgs[idx] ?? 120,
+      }));
+    } else {
+      const weeks = [0, 0, 0, 0];
+      const counts = [0, 0, 0, 0];
+      monthlyAvgs.forEach((avg, idx) => {
+        const weekIdx = Math.min(3, Math.floor(idx / 7.5));
+        weeks[weekIdx] += avg;
+        counts[weekIdx] += 1;
+      });
+      return weeks.map((sum, idx) => ({
+        label: `Week ${idx + 1}`,
+        avg: counts[idx] > 0 ? Math.round(sum / counts[idx]) : 120,
+      }));
+    }
+  }, [period, weeklyAvgs, weekLabels, monthlyAvgs]);
 
   return (
     <View style={[styles.root, { paddingTop: Platform.OS === 'web' ? insets.top + 67 : insets.top }]}>
@@ -176,11 +304,9 @@ export default function AnalyticsScreen() {
         {/* Daily breakdown */}
         <View style={styles.breakdownCard}>
           <Text style={styles.breakdownTitle}>{period === 'week' ? 'Daily' : 'Weekly'} Breakdown</Text>
-          {(period === 'week' ? mockWeeklyData : mockMonthlyData.slice(0, 4)).map((d: any, i: number) => {
-            const avg = period === 'week'
-              ? Math.round(d.readings.reduce((s: number, v: number) => s + v, 0) / d.readings.length)
-              : d.avg;
-            const label = period === 'week' ? d.day : `Week ${i + 1}`;
+          {breakdownData.map((d: any, i: number) => {
+            const avg = d.avg;
+            const label = d.label;
             const color = avg < 70 ? COLORS.alertRed : avg > 250 ? COLORS.alertOrange : avg > 180 ? COLORS.zoneYellow : COLORS.success;
             const pct = Math.min(100, Math.round((avg / 300) * 100));
             return (

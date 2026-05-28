@@ -1,10 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { StyleSheet, Text, View, ScrollView, Dimensions } from 'react-native';
 import Svg, { Path, Line, Rect, Circle, Text as SvgText } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '@/constants/colors';
 import { useGlucose } from '@/context/AppContext';
 import { mockWeeklyData } from '@/data/mockData';
+
+import { useAuth } from '@/context/AppContext';
+import { supabase } from '@/lib/supabase';
 
 const weeklyData = mockWeeklyData.map(d => ({
   avg: Math.round(d.readings.reduce((a, b) => a + b, 0) / d.readings.length),
@@ -69,7 +72,84 @@ function TrendChart({ data }: { data: { avg: number; min: number; max: number }[
 
 export default function GlucoseTrendScreen() {
   const { readings } = useGlucose();
-  const avgToday = Math.round(readings.reduce((s, r) => s + r.value, 0) / readings.length);
+  const { currentUser } = useAuth();
+  const [dbReadings, setDbReadings] = useState<any[]>([]);
+
+  useEffect(() => {
+    const childProfileId = currentUser?.childProfiles?.[0]?.id;
+    if (!childProfileId) return;
+
+    const fetchTrendData = async () => {
+      const { data, error } = await supabase
+        .from('glucose_readings')
+        .select('*')
+        .eq('child_profile_id', childProfileId)
+        .order('recorded_at', { ascending: false });
+
+      if (error) {
+        console.error("Error fetching trend data:", error.message);
+        return;
+      }
+      if (data) {
+        setDbReadings(data);
+      }
+    };
+    fetchTrendData();
+  }, [currentUser]);
+
+  const avgToday = readings.length > 0 ? Math.round(readings.reduce((s, r) => s + r.value, 0) / readings.length) : 0;
+
+  const last7DaysData = useMemo(() => {
+    if (dbReadings.length === 0) return weeklyData;
+
+    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const days: { dateStr: string; dayName: string; values: number[] }[] = [];
+    const now = new Date();
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(now.getDate() - i);
+      days.push({
+        dateStr: d.toDateString(),
+        dayName: dayNames[d.getDay()],
+        values: [] as number[],
+      });
+    }
+
+    dbReadings.forEach(r => {
+      const rDate = new Date(r.recorded_at).toDateString();
+      const match = days.find(day => day.dateStr === rDate);
+      if (match) {
+        match.values.push(r.reading_value);
+      }
+    });
+
+    return days.map(d => {
+      const vals = d.values.length > 0 ? d.values : [120];
+      return {
+        avg: Math.round(vals.reduce((a, b) => a + b, 0) / vals.length),
+        min: Math.min(...vals),
+        max: Math.max(...vals),
+      };
+    });
+  }, [dbReadings]);
+
+  const stats = useMemo(() => {
+    if (dbReadings.length === 0) {
+      return {
+        avg7d: 142,
+        inRange: '71%',
+        highs: 4,
+        lows: 1,
+      };
+    }
+    const vals = dbReadings.map(r => r.reading_value);
+    const avg7d = Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
+    const inRangeCount = vals.filter(v => v >= 70 && v <= 180).length;
+    const inRange = `${Math.round((inRangeCount / vals.length) * 100)}%`;
+    const highs = vals.filter(v => v > 250).length;
+    const lows = vals.filter(v => v < 70).length;
+    return { avg7d, inRange, highs, lows };
+  }, [dbReadings]);
 
   return (
     <View style={styles.root}>
@@ -77,10 +157,10 @@ export default function GlucoseTrendScreen() {
         {/* Stats Row */}
         <View style={styles.statsRow}>
           {[
-            { label: 'Avg (7d)', value: '142', unit: 'mg/dL', color: COLORS.primary },
-            { label: 'In Range', value: '71%', unit: 'of time', color: COLORS.zoneGreen },
-            { label: 'High Events', value: '4', unit: 'this week', color: COLORS.alertOrange },
-            { label: 'Low Events', value: '1', unit: 'this week', color: COLORS.alertRed },
+            { label: 'Avg (7d)', value: String(stats.avg7d), unit: 'mg/dL', color: COLORS.primary },
+            { label: 'In Range', value: stats.inRange, unit: 'of time', color: COLORS.zoneGreen },
+            { label: 'High Events', value: String(stats.highs), unit: 'this week', color: COLORS.alertOrange },
+            { label: 'Low Events', value: String(stats.lows), unit: 'this week', color: COLORS.alertRed },
           ].map((s, i) => (
             <View key={i} style={styles.statCard}>
               <Text style={[styles.statValue, { color: s.color }]}>{s.value}</Text>
@@ -97,7 +177,7 @@ export default function GlucoseTrendScreen() {
             <View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: 'rgba(16,185,129,0.3)' }]} /><Text style={styles.legendText}>Target zone (70-180)</Text></View>
             <View style={styles.legendItem}><View style={[styles.legendDash, { borderColor: COLORS.primary }]} /><Text style={styles.legendText}>Average</Text></View>
           </View>
-          <TrendChart data={weeklyData} />
+          <TrendChart data={last7DaysData} />
         </View>
 
         {/* Today's Readings */}
