@@ -6,13 +6,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '@/constants/colors';
 import { useGlucose } from '@/context/AppContext';
 
-const MODULES = [
-  { id: 'my-sugar',    icon: 'water',       title: 'My Sugar',    subtitle: '5 readings today', bg: COLORS.primary, text: '#fff',          iconColor: 'rgba(255,255,255,0.85)' },
-  { id: 'my-medicine', icon: 'medical',     title: 'My Medicine', subtitle: 'Morning: Taken',   bg: COLORS.blue,    text: COLORS.textDark, iconColor: COLORS.primary },
-  { id: 'eat-smart',   icon: 'nutrition',   title: 'Eat Smart',   subtitle: 'Lunch logged',     bg: COLORS.mint,    text: COLORS.textDark, iconColor: COLORS.success },
-  { id: 'move-play',   icon: 'bicycle',     title: 'Move & Play', subtitle: '30 min today',     bg: COLORS.coral,   text: COLORS.textDark, iconColor: COLORS.alertRed },
-];
-
 export default function TreatmentScreen() {
   const insets = useSafeAreaInsets();
   const { lastReading, getZone } = useGlucose();
@@ -20,6 +13,13 @@ export default function TreatmentScreen() {
   const zone = lastReading ? getZone(lastReading.value) : null;
   const zoneColor = zone === 'green' ? COLORS.success : zone === 'yellow' ? COLORS.zoneYellow : zone === 'red_high' ? COLORS.alertOrange : COLORS.alertRed;
   const zoneLabel = zone === 'green' ? 'In Range' : zone === 'yellow' ? 'Slightly High' : zone === 'red_high' ? 'Too High' : 'Too Low';
+
+  const MODULES = [
+    { id: 'my-sugar',    icon: 'water',       title: 'My Sugar',    subtitle: 'Log readings',     bg: COLORS.primary, text: '#fff',          iconColor: 'rgba(255,255,255,0.85)' },
+    { id: 'my-medicine', icon: 'medical',     title: 'My Medicine', subtitle: 'Track doses',      bg: COLORS.blue,    text: COLORS.textDark, iconColor: COLORS.primary },
+    { id: 'eat-smart',   icon: 'nutrition',   title: 'Eat Smart',   subtitle: 'Log meals',        bg: COLORS.mint,    text: COLORS.textDark, iconColor: COLORS.success },
+    { id: 'move-play',   icon: 'bicycle',     title: 'Move & Play', subtitle: 'Log activity',     bg: COLORS.coral,   text: COLORS.textDark, iconColor: COLORS.alertRed },
+  ];
 
   return (
     <View style={[styles.root, { paddingTop: insets.top + (Platform.OS === 'web' ? 67 : 0) }]}>

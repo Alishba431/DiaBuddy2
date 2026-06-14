@@ -1,33 +1,64 @@
-import React from 'react';
-import { StyleSheet, Text, TouchableOpacity, View, ScrollView, Platform } from 'react-native';
-import { router } from 'expo-router';
+import React, { useCallback } from 'react';
+import { StyleSheet, Text, View, ScrollView, Platform } from 'react-native';
+import { useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '@/constants/colors';
-import { useChildProfile } from '@/context/AppContext';
-import { earnedBadges, lockedBadges, pointsHistory } from '@/data/mockData';
+import { useChildProfile, useAuth, useMissions } from '@/context/AppContext';
+import { buildRollingWeek, checkAndAwardBadges, fetchEarnedBadgeTypes } from '@/lib/rewards';
+import { supabase } from '@/lib/supabase';
 
-const STREAK_DAYS = [true, true, true, true, true, false, false];
-const DAYS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
-
-const BADGE_ICONS: Record<string, string> = {
-  'document-text': 'document-text',
-  'flame': 'flame',
-  'brain': 'bulb',
-  'leaf': 'leaf',
-};
+const BADGE_DEFS = [
+  { id: 'first_log', name: 'First Log', emoji: '🏅', requirement: 'Log your first glucose' },
+  { id: 'week_streak', name: '7-Day Streak', emoji: '🔥', requirement: 'Log 7 days in a row' },
+  { id: 'month_streak', name: 'Month Champion', emoji: '🏆', requirement: 'Log 30 days in a row' },
+  { id: 'first_quiz', name: 'Quiz Master', emoji: '🧠', requirement: 'Complete a quiz' },
+  { id: 'diabetes_star', name: 'Diabetes Star', emoji: '⭐', requirement: 'Reach 500 points' },
+  { id: 'sugar_warrior', name: 'Sugar Warrior', emoji: '💪', requirement: '100% in target for a day' },
+  { id: 'medicine_hero', name: 'Medicine Hero', emoji: '💊', requirement: 'No missed doses this week' },
+];
 
 export default function RewardsScreen() {
   const insets = useSafeAreaInsets();
-  const { profile, getCharacterEmoji } = useChildProfile();
-  const nextLevelPts = (profile.level + 1) * 200;
+  const { currentUser } = useAuth();
+  const childProfileId = currentUser?.childProfiles?.[0]?.id;
+  const { profile, getCharacterEmoji, refreshProfile } = useChildProfile();
+  const { earnedBadgeIds, refreshBadges } = useMissions();
+
+  useFocusEffect(
+    useCallback(() => {
+      const sync = async () => {
+        if (!childProfileId) return;
+        await refreshProfile();
+        const { data: totals } = await supabase
+          .from('reward_totals')
+          .select('total_stars, current_streak_days')
+          .eq('child_profile_id', childProfileId)
+          .maybeSingle();
+        const earned = await fetchEarnedBadgeTypes(childProfileId);
+        await checkAndAwardBadges(childProfileId, {
+          totalStars: totals?.total_stars ?? profile.points,
+          streakDays: totals?.current_streak_days ?? profile.streak,
+          earned,
+        });
+        await refreshBadges();
+        await refreshProfile();
+      };
+      sync();
+    }, [childProfileId, refreshProfile, refreshBadges, profile.points, profile.streak])
+  );
+
+  const earnedBadges = BADGE_DEFS.filter(b => earnedBadgeIds.includes(b.id));
+  const lockedBadges = BADGE_DEFS.filter(b => !earnedBadgeIds.includes(b.id));
+
+  const nextLevelPts = profile.level * 200;
   const progress = profile.points / nextLevelPts;
+  const weekDays = buildRollingWeek(profile.streak);
 
   return (
     <View style={[styles.root, { paddingTop: insets.top + (Platform.OS === 'web' ? 67 : 0) }]}>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 100 }]}>
 
-        {/* Hero card */}
         <View style={styles.heroCard}>
           <Text style={styles.heroEmoji}>{getCharacterEmoji()}</Text>
           <View style={styles.levelBadge}>
@@ -35,39 +66,37 @@ export default function RewardsScreen() {
             <Text style={styles.levelText}>Level {profile.level}</Text>
           </View>
           <Text style={styles.points}>{profile.points}</Text>
-          <Text style={styles.pointsLabel}>points</Text>
-          <Text style={styles.nextLevel}>{nextLevelPts - profile.points} pts to Level {profile.level + 1}</Text>
+          <Text style={styles.pointsLabel}>stars earned</Text>
+          <Text style={styles.nextLevel}>{Math.max(nextLevelPts - profile.points, 0)} pts to next level</Text>
           <View style={styles.progressTrack}>
             <View style={[styles.progressFill, { width: `${Math.min(progress * 100, 100)}%` }]} />
           </View>
         </View>
 
-        {/* Streak */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>This Week's Streak</Text>
+          <Text style={styles.sectionTitle}>Current Streak: {profile.streak} days</Text>
           <View style={styles.streakCard}>
-            {DAYS.map((d, i) => (
+            {weekDays.map((d, i) => (
               <View key={i} style={styles.streakDay}>
-                <View style={[styles.streakCircle, STREAK_DAYS[i] ? styles.streakFilled : styles.streakEmpty]}>
-                  {STREAK_DAYS[i] && <Ionicons name="flame" size={14} color="#fff" />}
+                <View style={[styles.streakCircle, d.filled ? styles.streakFilled : styles.streakEmpty]}>
+                  {d.filled && <Ionicons name="flame" size={14} color="#fff" />}
                 </View>
-                <Text style={[styles.streakLabel, STREAK_DAYS[i] && { color: COLORS.primary }]}>{d}</Text>
+                <Text style={[styles.streakLabel, (d.filled || d.isToday) && { color: COLORS.primary }]}>{d.label}</Text>
               </View>
             ))}
           </View>
         </View>
 
-        {/* Earned badges */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Your Badges</Text>
           <View style={styles.badgeGrid}>
             {earnedBadges.map(b => (
               <View key={b.id} style={styles.badgeCard}>
                 <View style={[styles.badgeIconBox, { backgroundColor: COLORS.primary + '15' }]}>
-                  <Ionicons name={(BADGE_ICONS[b.icon] || b.icon) as any} size={28} color={COLORS.primary} />
+                  <Text style={{ fontSize: 28 }}>{b.emoji}</Text>
                 </View>
                 <Text style={styles.badgeName}>{b.name}</Text>
-                <Text style={styles.badgeDesc} numberOfLines={2}>{b.description}</Text>
+                <Text style={styles.badgeDesc} numberOfLines={2}>{b.requirement}</Text>
               </View>
             ))}
             {lockedBadges.map(b => (
@@ -82,42 +111,6 @@ export default function RewardsScreen() {
           </View>
         </View>
 
-        {/* Certificate */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Certificates</Text>
-          <TouchableOpacity style={styles.certCard} onPress={() => router.push('/learn/certificate' as any)}>
-            <View style={styles.certIconBox}>
-              <Ionicons name="ribbon" size={28} color={COLORS.accentDark} />
-            </View>
-            <View style={styles.certInfo}>
-              <Text style={styles.certTitle}>Diabetes Star</Text>
-              <Text style={styles.certDesc}>Logged every day for 5 days!</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={20} color={COLORS.textDark} />
-          </TouchableOpacity>
-        </View>
-
-        {/* Points history */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Recent Points</Text>
-          <View style={styles.historyCard}>
-            {pointsHistory.map((h, i) => (
-              <React.Fragment key={i}>
-                <View style={styles.historyRow}>
-                  <View style={styles.historyIconBox}>
-                    <Ionicons name="star" size={16} color={COLORS.accent} />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.historyAction}>{h.action}</Text>
-                    <Text style={styles.historyDate}>{h.date}</Text>
-                  </View>
-                  <Text style={styles.historyPts}>+{h.points} pts</Text>
-                </View>
-                {i < pointsHistory.length - 1 && <View style={styles.histDivider} />}
-              </React.Fragment>
-            ))}
-          </View>
-        </View>
       </ScrollView>
     </View>
   );
@@ -159,22 +152,4 @@ const styles = StyleSheet.create({
   badgeIconBox: { width: 52, height: 52, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
   badgeName: { fontSize: 14, fontFamily: 'Inter_700Bold', color: COLORS.textDark, textAlign: 'center' },
   badgeDesc: { fontSize: 12, fontFamily: 'Inter_400Regular', color: COLORS.textMuted, textAlign: 'center', lineHeight: 16 },
-  certCard: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.accentLight,
-    borderRadius: 20, padding: 18, gap: 14, borderWidth: 1.5, borderColor: COLORS.accent,
-  },
-  certIconBox: { width: 52, height: 52, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.6)', justifyContent: 'center', alignItems: 'center' },
-  certInfo: { flex: 1 },
-  certTitle: { fontSize: 16, fontFamily: 'Inter_700Bold', color: COLORS.textDark },
-  certDesc: { fontSize: 14, fontFamily: 'Inter_400Regular', color: COLORS.textMuted },
-  historyCard: {
-    backgroundColor: COLORS.card, borderRadius: 20, overflow: 'hidden',
-    shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2,
-  },
-  historyRow: { flexDirection: 'row', alignItems: 'center', padding: 14, paddingHorizontal: 16, gap: 12 },
-  historyIconBox: { width: 34, height: 34, borderRadius: 10, backgroundColor: COLORS.accentLight, justifyContent: 'center', alignItems: 'center' },
-  histDivider: { height: 1, backgroundColor: COLORS.divider, marginHorizontal: 16 },
-  historyAction: { fontSize: 14, fontFamily: 'Inter_500Medium', color: COLORS.textDark },
-  historyDate: { fontSize: 12, fontFamily: 'Inter_400Regular', color: COLORS.textMuted },
-  historyPts: { fontSize: 15, fontFamily: 'Inter_700Bold', color: COLORS.primary },
 });

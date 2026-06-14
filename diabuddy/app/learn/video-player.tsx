@@ -5,23 +5,37 @@ import * as WebBrowser from 'expo-web-browser';
 import { COLORS } from '@/constants/colors';
 import { learningVideos } from '@/data/mockData';
 import { PointsToast } from '@/components/PointsToast';
+import { MISSION_POINTS, completeMissionField } from '@/lib/rewards';
+import { useAuth, useChildProfile } from '@/context/AppContext';
 
 const LANGS = ['English', 'اردو', 'Roman Urdu'];
 
 export default function VideoPlayerScreen() {
   const { videoId } = useLocalSearchParams<{ videoId: string }>();
+  const { currentUser } = useAuth();
+  const { addPoints } = useChildProfile();
+  const childProfileId = currentUser?.childProfiles?.[0]?.id;
   const video = learningVideos.find(v => v.id === videoId) ?? learningVideos[0];
   const [lang, setLang] = useState('English');
   const [toast, setToast] = useState(false);
+  const [rewarded, setRewarded] = useState(false);
+
+  const grantVideoReward = async () => {
+    if (rewarded || !childProfileId) return;
+    setRewarded(true);
+    addPoints(MISSION_POINTS.video_watched);
+    await completeMissionField(childProfileId, 'video_watched');
+    setToast(true);
+  };
 
   const openVideo = async () => {
     await WebBrowser.openBrowserAsync(video.youtubeUrl);
-    setToast(true);
+    await grantVideoReward();
   };
 
   return (
     <View style={styles.root}>
-      <PointsToast points={25} visible={toast} onHide={() => setToast(false)} />
+      <PointsToast points={MISSION_POINTS.video_watched} visible={toast} onHide={() => setToast(false)} />
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
         {/* Thumbnail */}
         <View style={[styles.thumbnail, { backgroundColor: video.color }]}>
@@ -59,7 +73,7 @@ export default function VideoPlayerScreen() {
 
         {/* Open in browser */}
         <TouchableOpacity style={styles.openBtn} onPress={openVideo}>
-          <Text style={styles.openBtnText}>🎬 Open Full Video in Browser +25 pts</Text>
+          <Text style={styles.openBtnText}>🎬 Open Full Video in Browser +{MISSION_POINTS.video_watched} pts</Text>
         </TouchableOpacity>
 
         {/* Quiz CTA */}

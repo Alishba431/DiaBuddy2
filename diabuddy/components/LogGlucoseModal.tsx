@@ -7,8 +7,11 @@ import * as Haptics from 'expo-haptics';
 import { COLORS } from '@/constants/colors';
 import { useGlucose } from '@/context/AppContext';
 import { useChildProfile } from '@/context/AppContext';
+import { MISSION_POINTS } from '@/lib/rewards';
 
-const TYPES = ['Fasting', 'After Meal', 'Pre-Snack', 'Before Snack'];
+// Labels map to real DB enum values (probed from live Supabase):
+// fasting | post_meal | bedtime | post_exercise | pre_exercise | random
+const TYPES = ['Fasting', 'After Meal', 'Before Bed', 'After Exercise', 'Before Exercise', 'Random'];
 
 interface Props {
   visible: boolean;
@@ -33,7 +36,7 @@ export function LogGlucoseModal({ visible, onClose, onSaved }: Props) {
     const now = new Date();
     const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
     addReading({ time, value: sanitizedVal, type });
-    addPoints(10);
+    addPoints(MISSION_POINTS.bg_logged);
     const zone = getZone(sanitizedVal);
     if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     onSaved(sanitizedVal, zone);

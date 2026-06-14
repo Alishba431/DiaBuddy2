@@ -9,7 +9,6 @@ import { COLORS } from '@/constants/colors';
 import { useChildProfile, useGlucose, useMissions } from '@/context/AppContext';
 import { CharacterMascot } from '@/components/CharacterMascot';
 import { GlucoseZoneBadge } from '@/components/GlucoseZoneBadge';
-import { PointsToast } from '@/components/PointsToast';
 
 const TIPS = [
   "Don't forget your afternoon glucose check!",
@@ -39,11 +38,9 @@ export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const { profile, getCharacterEmoji } = useChildProfile();
   const { lastReading, getZone } = useGlucose();
-  const { missions, toggleMission, completedCount } = useMissions();
+  const { missions, completedCount } = useMissions();
   const [tipIdx, setTipIdx] = useState(0);
   const [selectedMood, setSelectedMood] = useState<number | null>(null);
-  const [toast, setToast] = useState(false);
-  const [toastPts, setToastPts] = useState(0);
 
   const progressW = useSharedValue(0);
 
@@ -58,19 +55,11 @@ export default function HomeScreen() {
 
   const progressStyle = useAnimatedStyle(() => ({ width: `${progressW.value * 100}%` as any }));
 
-  const handleMission = (id: string, pts: number, screen: string) => {
-    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    toggleMission(id);
-    setToastPts(pts);
-    setToast(true);
-  };
-
   const zone = lastReading ? getZone(lastReading.value) : 'green';
   const topPad = insets.top + (Platform.OS === 'web' ? 67 : 0);
 
   return (
     <View style={[styles.root, { paddingTop: topPad }]}>
-      <PointsToast points={toastPts} visible={toast} onHide={() => setToast(false)} />
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 100 }]}>
 
         {/* Top Bar */}
@@ -109,7 +98,12 @@ export default function HomeScreen() {
           <TouchableOpacity
             key={m.id}
             style={[styles.missionCard, m.status === 'done' && styles.missionDone]}
-            onPress={() => m.status === 'pending' ? handleMission(m.id, m.points, m.screen) : undefined}
+            onPress={() => {
+              if (m.status === 'pending') {
+                if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                router.push(m.screen as any);
+              }
+            }}
             activeOpacity={m.status === 'pending' ? 0.7 : 1}
           >
             <View style={[styles.missionIconBox, { backgroundColor: m.status === 'done' ? COLORS.mint : COLORS.surface }]}>
@@ -126,7 +120,10 @@ export default function HomeScreen() {
             {m.status === 'pending' && (
               <TouchableOpacity
                 style={styles.doItBtn}
-                onPress={() => { handleMission(m.id, m.points, m.screen); router.push(m.screen as any); }}
+                onPress={() => {
+                  if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                  router.push(m.screen as any);
+                }}
               >
                 <Text style={styles.doItText}>Go</Text>
               </TouchableOpacity>

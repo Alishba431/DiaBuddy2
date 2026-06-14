@@ -46,13 +46,12 @@ export type AlertType =
 
 export type BadgeType =
   | 'first_log'
-  | 'streak_3'
-  | 'quiz_master'
-  | 'veggie_hero'
-  | 'streak_7'
-  | 'insulin_hero'
-  | 'sugar_detective'
-  | 'move_champion';
+  | 'week_streak'
+  | 'month_streak'
+  | 'first_quiz'
+  | 'diabetes_star'
+  | 'sugar_warrior'
+  | 'medicine_hero';
 
 export type UserRole = 'child' | 'caregiver';
 
@@ -605,7 +604,12 @@ export interface Database {
       };
     };
     Views: Record<string, never>;
-    Functions: Record<string, never>;
+    Functions: {
+      award_badge: {
+        Args: { p_child_profile_id: string; p_badge_type: BadgeType };
+        Returns: boolean;
+      };
+    };
     Enums: {
       dm_type: DmType;
       character_type: CharacterType;

@@ -3,6 +3,7 @@ import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import Animated, { useSharedValue, useAnimatedStyle, withSpring, withDelay, withSequence, withTiming } from 'react-native-reanimated';
 import { COLORS } from '@/constants/colors';
+import { useMissions, useChildProfile } from '@/context/AppContext';
 
 export default function QuizResultScreen() {
   const { score, total, points } = useLocalSearchParams<{ score: string; total: string; points: string }>();
@@ -13,10 +14,14 @@ export default function QuizResultScreen() {
 
   const trophyScale = useSharedValue(0);
   const cardScale = useSharedValue(0.8);
+  const { awardBadge } = useMissions();
+  const { addPoints } = useChildProfile();
 
   useEffect(() => {
     trophyScale.value = withDelay(200, withSpring(1, { damping: 6, stiffness: 180 }));
     cardScale.value = withDelay(100, withSpring(1, { damping: 10 }));
+    if (pts > 0) addPoints(pts);
+    awardBadge('first_quiz');
   }, []);
 
   const trophyStyle = useAnimatedStyle(() => ({ transform: [{ scale: trophyScale.value }] }));

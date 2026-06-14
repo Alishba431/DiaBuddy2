@@ -1,7 +1,14 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { mockProfile, mockGlucoseReadings, mockMissions, characters } from '@/data/mockData';
+import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import { mockProfile, mockGlucoseReadings, characters } from '@/data/mockData';
 import * as Crypto from 'expo-crypto';
 import { supabase } from '@/lib/supabase';
+import {
+  MISSION_POINTS,
+  awardBadge as awardBadgeDb,
+  completeMissionField,
+  fetchEarnedBadgeTypes,
+  localDateString,
+} from '@/lib/rewards';
 import type { ChildProfile as DbChildProfile, Profile as DbProfile } from '@/types/database';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -454,68 +461,127 @@ const ChildProfileContext = createContext<{
   profile: ChildProfile;
   setProfile: (p: ChildProfile) => void;
   addPoints: (pts: number) => void;
+  refreshProfile: () => Promise<void>;
   getCharacterEmoji: () => string;
-}>({ profile: mockProfile, setProfile: () => {}, addPoints: () => {}, getCharacterEmoji: () => '🦁' });
+}>({ profile: mockProfile, setProfile: () => {}, addPoints: () => {}, refreshProfile: async () => {}, getCharacterEmoji: () => '🦁' });
 
 function ChildProfileProvider({ children }: { children: ReactNode }) {
   const { currentUser } = useAuth();
   const [profile, setProfile] = useState<ChildProfile>(mockProfile);
 
-  useEffect(() => {
+  const fetchProfileData = useCallback(async () => {
     const activeChild = currentUser?.childProfiles?.[0];
     if (!activeChild) return;
+
+    const { data: totals, error } = await supabase.from('reward_totals').select('*').eq('child_profile_id', activeChild.id).maybeSingle();
+    
+    let pts = 0;
+    let streak = 0;
+    let levelNum = 1;
+
+    if (totals) {
+      pts = totals.total_stars || 0;
+      streak = totals.current_streak_days || 0;
+      const lvlStr = totals.level;
+      if (lvlStr === 'hero') levelNum = 2;
+      else if (lvlStr === 'champion') levelNum = 3;
+      else if (lvlStr === 'legend') levelNum = 4;
+    } else if (!error) {
+       await supabase.from('reward_totals').insert({ child_profile_id: activeChild.id });
+    }
 
     setProfile({
       name: activeChild.display_name,
       age: activeChild.age,
       character: mapCharacterFromDb(activeChild.character_choice) as any,
       language: mapLanguageFromDb(activeChild.language) as any,
-      points: 0,
-      level: 1,
-      streak: 0,
+      points: pts,
+      level: levelNum,
+      streak: streak,
     });
   }, [currentUser]);
 
-  const addPoints = (pts: number) => setProfile(p => ({ ...p, points: p.points + pts }));
+  useEffect(() => {
+    fetchProfileData();
+  }, [fetchProfileData]);
+
+  const addPoints = async (pts: number) => {
+    const activeChild = currentUser?.childProfiles?.[0];
+    if (!activeChild) return;
+
+    const { data: totals } = await supabase.from('reward_totals').select('*').eq('child_profile_id', activeChild.id).maybeSingle();
+    
+    if (totals) {
+      const newPts = (totals.total_stars || 0) + pts;
+      let newStreak = totals.current_streak_days || 0;
+      
+      const lastUpdate = totals.updated_at ? new Date(totals.updated_at) : null;
+      const today = new Date();
+      
+      let isToday = false;
+      let isYesterday = false;
+      
+      if (lastUpdate) {
+         isToday = lastUpdate.toDateString() === today.toDateString();
+         const yesterday = new Date();
+         yesterday.setDate(yesterday.getDate() - 1);
+         isYesterday = lastUpdate.toDateString() === yesterday.toDateString();
+      }
+
+      if (!isToday) {
+         if (isYesterday) {
+            newStreak += 1;
+         } else {
+            newStreak = 1;
+         }
+      }
+
+      let newLevel = totals.level;
+      if (newPts >= 800) newLevel = 'legend';
+      else if (newPts >= 600) newLevel = 'champion';
+      else if (newPts >= 400) newLevel = 'hero';
+      else if (newPts >= 200) newLevel = 'apprentice';
+
+      await supabase.from('reward_totals').update({ 
+         total_stars: newPts,
+         current_streak_days: newStreak,
+         level: newLevel,
+         updated_at: new Date().toISOString()
+      }).eq('child_profile_id', activeChild.id);
+
+      fetchProfileData();
+    }
+  };
+
   const getCharacterEmoji = () => characters.find(c => c.id === profile.character)?.emoji ?? '🦁';
-  return <ChildProfileContext.Provider value={{ profile, setProfile, addPoints, getCharacterEmoji }}>{children}</ChildProfileContext.Provider>;
+  return <ChildProfileContext.Provider value={{ profile, setProfile, addPoints, refreshProfile: fetchProfileData, getCharacterEmoji }}>{children}</ChildProfileContext.Provider>;
 }
 
 // ─── Glucose Context ──────────────────────────────────────────────────────────
 
 const mapBgTagFromDb = (tag: string): string => {
   if (tag === 'fasting') return 'Fasting';
-  if (tag === 'after_meal' || tag === 'post_meal') return 'After Meal';
-  if (tag === 'before_bed') return 'Before Bed';
-  if (tag === 'after_exercise') return 'After Exercise';
-  if (tag === 'pre_snack') return 'Pre-Snack';
-  if (tag === 'before_snack') return 'Before Snack';
+  if (tag === 'post_meal') return 'After Meal';
+  if (tag === 'bedtime') return 'Before Bed';
+  if (tag === 'post_exercise') return 'After Exercise';
+  if (tag === 'pre_exercise') return 'Before Exercise';
+  if (tag === 'random') return 'Random';
   return tag;
 };
 
+// Maps UI display labels → actual DB enum values (probed from live DB)
+// Valid bg_tag enum: fasting | post_meal | bedtime | post_exercise | pre_exercise | random
 const mapBgTagToDb = (tag: string): string => {
   const cleaned = tag.trim();
-  // Direct mappings for known UI labels
-  if (cleaned === 'After Meal') return 'after_meal';
-  if (cleaned === 'Pre-Snack' || cleaned === 'Pre‑Snack') return 'pre_snack';
-  if (cleaned === 'Before Snack') return 'before_snack';
-  if (cleaned === 'Before Bed') return 'before_bed';
-  if (cleaned === 'After Exercise') return 'after_exercise';
   if (cleaned === 'Fasting') return 'fasting';
-  // Normalise any other input: lowercase and replace spaces/hyphens with underscores
-  const normalized = cleaned
-    .toLowerCase()
-    .replace(/[\s\-\u2010\u2011\u2012\u2013\u2014\u2015]+/g, "_");
-  // If still not matching known enum values, default to 'fasting' to avoid DB errors
-  const validEnums = [
-    'fasting',
-    'after_meal',
-    'before_bed',
-    'after_exercise',
-    'pre_snack',
-    'post_meal',
-    'before_snack',
-  ];
+  if (cleaned === 'After Meal') return 'post_meal';
+  if (cleaned === 'Before Bed') return 'bedtime';
+  if (cleaned === 'After Exercise') return 'post_exercise';
+  if (cleaned === 'Before Exercise') return 'pre_exercise';
+  if (cleaned === 'Random') return 'random';
+  // Fallback: try lowercase + underscore normalisation
+  const normalized = cleaned.toLowerCase().replace(/[\s\-]+/g, '_');
+  const validEnums = ['fasting', 'post_meal', 'bedtime', 'post_exercise', 'pre_exercise', 'random'];
   return validEnums.includes(normalized) ? normalized : 'fasting';
 };
 
@@ -631,10 +697,12 @@ function GlucoseProvider({ children }: { children: ReactNode }) {
       console.error("No active child profile found to save reading.");
       return;
     }
+    const readingTag = mapBgTagToDb(r.type);
+    console.log('[addReading] Inserting reading_tag:', readingTag, 'from type:', r.type);
     const { data, error } = await supabase.from('glucose_readings').insert({
       child_profile_id: childProfileId,
       reading_value: r.value,
-      reading_tag: mapBgTagToDb(r.type) as any,
+      reading_tag: readingTag,
       notes: null,
       recorded_at: new Date().toISOString()
     }).select();
@@ -654,6 +722,9 @@ function GlucoseProvider({ children }: { children: ReactNode }) {
         date,
       };
       setReadings(prev => [mapped, ...prev]);
+
+      await completeMissionField(childProfileId, 'bg_logged');
+      await awardBadgeDb(childProfileId, 'first_log');
     }
   };
 
@@ -671,16 +742,109 @@ function GlucoseProvider({ children }: { children: ReactNode }) {
 
 const MissionsContext = createContext<{
   missions: Mission[];
-  toggleMission: (id: string) => void;
+  toggleMission: (id: string) => Promise<void>;
   completedCount: number;
-}>({ missions: mockMissions, toggleMission: () => {}, completedCount: 1 });
+  earnedBadgeIds: string[];
+  awardBadge: (badgeType: string) => Promise<boolean>;
+  refreshBadges: () => Promise<void>;
+}>({ missions: [], toggleMission: async () => {}, completedCount: 0, earnedBadgeIds: [], awardBadge: async () => false, refreshBadges: async () => {} });
 
 function MissionsProvider({ children }: { children: ReactNode }) {
-  const [missions, setMissions] = useState<Mission[]>(mockMissions);
-  const toggleMission = (id: string) =>
-    setMissions(prev => prev.map(m => m.id === id ? { ...m, status: (m.status === 'done' ? 'pending' : 'done') as 'done' | 'pending' } : m));
+  const { currentUser } = useAuth();
+  const { addPoints } = useChildProfile();
+  const childProfileId = currentUser?.childProfiles?.[0]?.id;
+  const [missions, setMissions] = useState<Mission[]>([]);
+  const [earnedBadgeIds, setEarnedBadgeIds] = useState<string[]>([]);
   const completedCount = missions.filter(m => m.status === 'done').length;
-  return <MissionsContext.Provider value={{ missions, toggleMission, completedCount }}>{children}</MissionsContext.Provider>;
+
+  const refreshBadges = useCallback(async () => {
+    if (!childProfileId) return;
+    const ids = await fetchEarnedBadgeTypes(childProfileId);
+    setEarnedBadgeIds(ids);
+  }, [childProfileId]);
+
+  const fetchMissions = useCallback(async () => {
+    if (!childProfileId) return;
+    const today = localDateString();
+    const { data: mData, error } = await supabase
+      .from('daily_missions')
+      .select('*')
+      .eq('child_profile_id', childProfileId)
+      .eq('mission_date', today)
+      .maybeSingle();
+
+    let dbMissions = mData;
+
+    if (!dbMissions && !error) {
+       const { data: newRow } = await supabase.from('daily_missions').upsert(
+         { child_profile_id: childProfileId, mission_date: today },
+         { onConflict: 'child_profile_id,mission_date' }
+       ).select().single();
+       dbMissions = newRow;
+    }
+
+    if (dbMissions) {
+      const mapped: Mission[] = [
+        { id: 'bg_logged', icon: 'pulse', title: 'Check your glucose', status: dbMissions.bg_logged ? 'done' : 'pending', screen: '/treatment/my-sugar', points: MISSION_POINTS.bg_logged },
+        { id: 'medicine_confirmed', icon: 'medical', title: 'Take your insulin', status: dbMissions.medicine_confirmed ? 'done' : 'pending', screen: '/treatment/my-medicine', points: MISSION_POINTS.medicine_confirmed },
+        { id: 'meal_logged', icon: 'nutrition', title: 'Log a meal', status: dbMissions.meal_logged ? 'done' : 'pending', screen: '/treatment/eat-smart', points: MISSION_POINTS.meal_logged },
+        { id: 'activity_done', icon: 'play-circle', title: 'Move & Play', status: dbMissions.activity_done ? 'done' : 'pending', screen: '/treatment/move-play', points: MISSION_POINTS.activity_done },
+        { id: 'video_watched', icon: 'videocam', title: 'Watch a Learn video', status: dbMissions.video_watched ? 'done' : 'pending', screen: '/learn', points: MISSION_POINTS.video_watched },
+      ];
+      setMissions(mapped);
+    }
+  }, [childProfileId]);
+
+  useEffect(() => {
+    fetchMissions();
+    refreshBadges();
+  }, [fetchMissions, refreshBadges]);
+
+  useEffect(() => {
+    if (!childProfileId) return;
+
+    const badgesChannel = supabase
+      .channel(`badges-${childProfileId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'badges_earned', filter: `child_profile_id=eq.${childProfileId}` },
+        () => { refreshBadges(); }
+      )
+      .subscribe();
+
+    const missionsChannel = supabase
+      .channel(`missions-${childProfileId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'daily_missions', filter: `child_profile_id=eq.${childProfileId}` },
+        () => { fetchMissions(); }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(badgesChannel);
+      supabase.removeChannel(missionsChannel);
+    };
+  }, [childProfileId, refreshBadges, fetchMissions]);
+
+  const toggleMission = async (id: string) => {
+    if (!childProfileId) return;
+    const mission = missions.find(m => m.id === id);
+    if (!mission || mission.status === 'done') return;
+
+    await completeMissionField(childProfileId, id as keyof typeof MISSION_POINTS);
+    addPoints(mission.points);
+    await fetchMissions();
+  };
+
+  const awardBadge = async (badgeType: string) => {
+    if (!childProfileId) return false;
+    const ok = await awardBadgeDb(childProfileId, badgeType);
+    if (ok) await refreshBadges();
+    return ok;
+  };
+
+  return <MissionsContext.Provider value={{ missions, toggleMission, completedCount, earnedBadgeIds, awardBadge, refreshBadges }}>{children}</MissionsContext.Provider>;
 }
 
 // ─── Settings Context ─────────────────────────────────────────────────────────

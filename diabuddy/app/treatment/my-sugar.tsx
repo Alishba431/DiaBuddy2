@@ -10,6 +10,7 @@ import { CharacterMascot } from '@/components/CharacterMascot';
 import { LogGlucoseModal } from '@/components/LogGlucoseModal';
 import { useChildProfile } from '@/context/AppContext';
 import { PointsToast } from '@/components/PointsToast';
+import { MISSION_POINTS } from '@/lib/rewards';
 
 const zoneColors: Record<string, string> = {
   green: COLORS.mint, yellow: COLORS.yellow, red_high: '#FEE2E2', red_low: '#FEE2E2',
@@ -41,7 +42,7 @@ export default function MySugarScreen() {
 
   return (
     <View style={styles.root}>
-      <PointsToast points={10} visible={toast} onHide={() => setToast(false)} />
+      <PointsToast points={MISSION_POINTS.bg_logged} visible={toast} onHide={() => setToast(false)} />
       <LogGlucoseModal
         visible={showModal}
         onClose={() => setShowModal(false)}
