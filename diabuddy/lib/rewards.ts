@@ -19,20 +19,26 @@ export function localDateString(date = new Date()): string {
   return `${y}-${m}-${d}`;
 }
 
-/** Last 7 calendar days ending today, for streak UI. */
+/** Current calendar week (Sunday to Saturday) ending today, for streak UI. */
 export function buildRollingWeek(streakDays: number) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const active = Math.min(Math.max(streakDays, 0), 7);
 
+  const startOfWeek = new Date(today);
+  startOfWeek.setDate(today.getDate() - today.getDay());
+
   return Array.from({ length: 7 }, (_, i) => {
-    const daysAgo = 6 - i;
-    const d = new Date(today);
-    d.setDate(d.getDate() - daysAgo);
+    const d = new Date(startOfWeek);
+    d.setDate(d.getDate() + i);
+    const diffDays = Math.round((today.getTime() - d.getTime()) / (1000 * 60 * 60 * 24));
+    
+    const filled = diffDays >= 0 && diffDays < active;
+    
     return {
       label: DAY_LETTERS[d.getDay()],
-      filled: daysAgo < active,
-      isToday: daysAgo === 0,
+      filled,
+      isToday: diffDays === 0,
     };
   });
 }
@@ -49,12 +55,15 @@ export async function ensureDailyMissionRow(childProfileId: string, missionDate 
 export async function completeMissionField(childProfileId: string, field: MissionField) {
   const missionDate = localDateString();
   await ensureDailyMissionRow(childProfileId, missionDate);
-  await supabase
+  const { error } = await supabase
     .from('daily_missions')
     .upsert(
       { child_profile_id: childProfileId, mission_date: missionDate, [field]: true },
       { onConflict: 'child_profile_id,mission_date' }
     );
+  if (error) {
+    console.error(`[completeMissionField] Failed to update ${field}:`, error.message);
+  }
 }
 
 export async function awardBadge(childProfileId: string, badgeType: string): Promise<boolean> {
@@ -124,6 +133,7 @@ export async function checkAndAwardBadges(
   if (ctx.totalStars >= 500 && !earned.has('diabetes_star')) toAward.push('diabetes_star');
   if (ctx.streakDays >= 7 && !earned.has('week_streak')) toAward.push('week_streak');
   if (ctx.streakDays >= 30 && !earned.has('month_streak')) toAward.push('month_streak');
+  if (ctx.totalStars > 0 && !earned.has('first_log')) toAward.push('first_log');
 
   for (const badge of toAward) {
     const ok = await awardBadge(childProfileId, badge);

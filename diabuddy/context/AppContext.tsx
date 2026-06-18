@@ -832,6 +832,8 @@ function MissionsProvider({ children }: { children: ReactNode }) {
     const mission = missions.find(m => m.id === id);
     if (!mission || mission.status === 'done') return;
 
+    setMissions(prev => prev.map(m => m.id === id ? { ...m, status: 'done' } : m));
+
     await completeMissionField(childProfileId, id as keyof typeof MISSION_POINTS);
     addPoints(mission.points);
     await fetchMissions();
